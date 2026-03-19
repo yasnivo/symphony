@@ -34,6 +34,32 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+### Multi-project bootstrap scripts
+
+This repository also includes helper scripts for quickly wiring Symphony into multiple repositories:
+
+- Build binary: `infra/build_symphony.sh`
+- Generate per-project config and launcher: `infra/bootstrap_project.sh`
+- Russian quickstart: `infra/README.ru.md`
+
+## Fork Differences (yasnivo/symphony)
+
+Compared to `openai/symphony`, this fork includes additional operational hardening and bootstrap
+helpers:
+
+- Safety hardening for main-repo workspace mode:
+  - cleanup paths never remove the workspace root when
+    `SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE=1`
+  - per-issue workspace cleanup is skipped in that mode to avoid resolving an issue cleanup target
+    to the repository root
+- App-server compatibility for main-repo mode:
+  - root workspace `cwd` is allowed only when `SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE=1`
+- Additional regression tests for workspace cleanup and app-server root-cwd handling, to prevent
+  destructive regressions from returning
+- Infra bootstrap scripts under `infra/` for multi-project setup flows
+
+See [elixir/README.md](elixir/README.md) for implementation details and safety notes.
+
 ---
 
 ## License

@@ -132,6 +132,12 @@ Notes:
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
   launched shell.
+- `SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE=1` enables "main-repo workspace mode", where issue runs may
+  use the workspace root directly instead of per-issue subdirectories.
+  - In this mode, Symphony protects the workspace root from cleanup deletion.
+  - In this mode, `remove_issue_workspaces/1` intentionally skips local per-issue cleanup.
+  - App-server `cwd` validation allows root `workspace.root` only when this env var is set.
+  - Keep this mode disabled unless you explicitly want runs inside a shared repository workspace.
 
 ```yaml
 tracker:
@@ -204,6 +210,15 @@ a real agent turn, verifies the workspace side effect, requires Codex to comment
 Linear issue, then marks the project completed so the run remains visible in Linear.
 
 ## FAQ
+
+### What is different in this fork vs openai/symphony?
+
+This fork includes hardening for main-repo workspace operation and supporting regression tests:
+
+- Prevents cleanup logic from deleting `workspace.root` in main-repo mode.
+- Avoids per-issue cleanup against root paths in main-repo mode.
+- Allows app-server root `cwd` only when main-repo mode is explicitly enabled.
+- Adds tests that lock these safety behaviors so future binary updates are less likely to regress.
 
 ### Why Elixir?
 
