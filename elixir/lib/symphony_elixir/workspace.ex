@@ -89,19 +89,21 @@ defmodule SymphonyElixir.Workspace do
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace, nil) do
-    case File.exists?(workspace) do
-      true ->
-        case validate_workspace_path(workspace, nil) do
-          :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
-            File.rm_rf(workspace)
-
-          {:error, reason} ->
-            {:error, reason, ""}
-        end
-
-      false ->
+    if File.exists?(workspace) do
+      with {:ok, false} <- root_workspace_protected?(workspace),
+           :ok <- validate_workspace_path(workspace, nil) do
+        maybe_run_before_remove_hook(workspace, nil)
         File.rm_rf(workspace)
+      else
+        {:ok, true} ->
+          Logger.warning("Skipping workspace root cleanup in main-repo workspace mode workspace=#{workspace}")
+          {:ok, []}
+
+        {:error, reason} ->
+          {:error, reason, ""}
+      end
+    else
+      File.rm_rf(workspace)
     end
   end
 
@@ -143,17 +145,10 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def remove_issue_workspaces(identifier, nil) when is_binary(identifier) do
-    safe_id = safe_identifier(identifier)
-
-    case Config.settings!().worker.ssh_hosts do
-      [] ->
-        case workspace_path_for_issue(safe_id, nil) do
-          {:ok, workspace} -> remove(workspace, nil)
-          {:error, _reason} -> :ok
-        end
-
-      worker_hosts ->
-        Enum.each(worker_hosts, &remove_issue_workspaces(identifier, &1))
+    if allow_root_workspace?() do
+      Logger.debug("Skipping per-issue workspace cleanup in main-repo workspace mode issue_identifier=#{identifier}")
+    else
+      remove_issue_workspaces_local(identifier)
     end
 
     :ok
@@ -194,17 +189,45 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
-    Config.settings!().workspace.root
-    |> Path.join(safe_id)
-    |> PathSafety.canonicalize()
+    target_path =
+      if allow_root_workspace?() do
+        Config.settings!().workspace.root
+      else
+        Path.join(Config.settings!().workspace.root, safe_id)
+      end
+
+    PathSafety.canonicalize(target_path)
   end
 
   defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
     {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
   end
 
+  defp allow_root_workspace? do
+    System.get_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE") == "1"
+  end
+
   defp safe_identifier(identifier) do
     String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  end
+
+  defp remove_issue_workspaces_local(identifier) do
+    safe_id = safe_identifier(identifier)
+
+    case Config.settings!().worker.ssh_hosts do
+      [] ->
+        remove_local_issue_workspace(safe_id)
+
+      worker_hosts ->
+        Enum.each(worker_hosts, &remove_issue_workspaces(identifier, &1))
+    end
+  end
+
+  defp remove_local_issue_workspace(safe_id) do
+    case workspace_path_for_issue(safe_id, nil) do
+      {:ok, workspace} -> remove(workspace, nil)
+      {:error, _reason} -> :ok
+    end
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
@@ -359,6 +382,7 @@ defmodule SymphonyElixir.Workspace do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Path.expand(Config.settings!().workspace.root)
     expanded_root_prefix = expanded_root <> "/"
+    allow_root_workspace? = allow_root_workspace?()
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
          {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
@@ -366,7 +390,7 @@ defmodule SymphonyElixir.Workspace do
 
       cond do
         canonical_workspace == canonical_root ->
-          {:error, {:workspace_equals_root, canonical_workspace, canonical_root}}
+          validate_workspace_root_match(canonical_workspace, canonical_root, allow_root_workspace?)
 
         String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
           :ok
@@ -395,6 +419,31 @@ defmodule SymphonyElixir.Workspace do
       true ->
         :ok
     end
+  end
+
+  defp root_workspace_protected?(workspace) when is_binary(workspace) do
+    if allow_root_workspace?() do
+      expanded_workspace = Path.expand(workspace)
+      expanded_root = Path.expand(Config.settings!().workspace.root)
+
+      with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
+           {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
+        {:ok, canonical_workspace == canonical_root}
+      else
+        {:error, {:path_canonicalize_failed, path, reason}} ->
+          {:error, {:workspace_path_unreadable, path, reason}}
+      end
+    else
+      {:ok, false}
+    end
+  end
+
+  defp validate_workspace_root_match(_canonical_workspace, _canonical_root, true) do
+    :ok
+  end
+
+  defp validate_workspace_root_match(canonical_workspace, canonical_root, false) do
+    {:error, {:workspace_equals_root, canonical_workspace, canonical_root}}
   end
 
   defp remote_shell_assign(variable_name, raw_path)

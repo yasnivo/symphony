@@ -76,6 +76,106 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server allows workspace root cwd in main-repo workspace mode" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-root-cwd-allow-#{System.unique_integer([:positive])}"
+      )
+
+    previous_allow_root_workspace = System.get_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE")
+    on_exit(fn -> restore_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE", previous_allow_root_workspace) end)
+    System.put_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE", "1")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex-root-mode")
+      trace_file = Path.join(test_root, "codex-root-mode.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEx_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+      File.mkdir_p!(workspace_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEx_TRACE:-/tmp/codex-root-mode.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-root-mode"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-root-mode"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, canonical_workspace_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+
+      issue = %Issue{
+        id: "issue-root-mode",
+        identifier: "MT-ROOT-MODE",
+        title: "Allow root workspace cwd in main-repo mode",
+        description: "Ensure app-server accepts root workspace cwd when explicitly enabled",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-ROOT-MODE",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace_root, "Run in main-repo workspace mode", issue)
+
+      trace = File.read!(trace_file)
+      lines = String.split(trace, "\n", trim: true)
+
+      assert Enum.any?(lines, fn line ->
+               if String.starts_with?(line, "JSON:") do
+                 line
+                 |> String.trim_leading("JSON:")
+                 |> Jason.decode!()
+                 |> then(fn payload ->
+                   payload["method"] == "thread/start" &&
+                     get_in(payload, ["params", "cwd"]) == canonical_workspace_root
+                 end)
+               else
+                 false
+               end
+             end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server passes explicit turn sandbox policies through unchanged" do
     test_root =
       Path.join(

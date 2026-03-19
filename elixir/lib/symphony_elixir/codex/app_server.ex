@@ -148,6 +148,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Path.expand(Config.settings!().workspace.root)
     expanded_root_prefix = expanded_root <> "/"
+    allow_root_workspace? = System.get_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE") == "1"
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(expanded_workspace),
          {:ok, canonical_root} <- PathSafety.canonicalize(expanded_root) do
@@ -155,7 +156,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       cond do
         canonical_workspace == canonical_root ->
-          {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
+          validate_workspace_root_match(canonical_workspace, allow_root_workspace?)
 
         String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
           {:ok, canonical_workspace}
@@ -184,6 +185,14 @@ defmodule SymphonyElixir.Codex.AppServer do
       true ->
         {:ok, workspace}
     end
+  end
+
+  defp validate_workspace_root_match(canonical_workspace, true) do
+    {:ok, canonical_workspace}
+  end
+
+  defp validate_workspace_root_match(canonical_workspace, false) do
+    {:error, {:invalid_workspace_cwd, :workspace_root, canonical_workspace}}
   end
 
   defp start_port(workspace, nil) do

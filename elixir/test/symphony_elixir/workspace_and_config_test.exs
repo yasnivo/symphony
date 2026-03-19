@@ -291,6 +291,66 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert :ok = Workspace.remove_issue_workspaces("S-2")
   end
 
+  test "workspace cleanup never deletes workspace root in main-repo workspace mode" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-root-workspace-protect-#{System.unique_integer([:positive])}"
+      )
+
+    previous_allow_root_workspace = System.get_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE")
+    on_exit(fn -> restore_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE", previous_allow_root_workspace) end)
+    System.put_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE", "1")
+
+    try do
+      marker = Path.join(workspace_root, "marker.txt")
+
+      File.mkdir_p!(workspace_root)
+      File.write!(marker, "keep")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert :ok = Workspace.remove_issue_workspaces("S-ROOT")
+      assert File.dir?(workspace_root)
+      assert File.read!(marker) == "keep"
+
+      assert {:ok, []} = Workspace.remove(workspace_root)
+      assert File.dir?(workspace_root)
+      assert File.read!(marker) == "keep"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace cleanup in main-repo workspace mode still removes nested workspaces" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-root-workspace-nested-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    previous_allow_root_workspace = System.get_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE")
+    on_exit(fn -> restore_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE", previous_allow_root_workspace) end)
+    System.put_env("SYMPHONY_ALLOW_MAIN_REPO_WORKSPACE", "1")
+
+    try do
+      nested_workspace = Path.join(workspace_root, "S_SAFE")
+      marker = Path.join(nested_workspace, "marker.txt")
+      missing_workspace = Path.join(workspace_root, "MISSING")
+
+      File.mkdir_p!(nested_workspace)
+      File.write!(marker, "delete")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, _} = Workspace.remove(nested_workspace)
+      refute File.exists?(nested_workspace)
+
+      assert {:ok, _} = Workspace.remove(missing_workspace)
+      refute File.exists?(missing_workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace cleanup ignores non-binary identifier" do
     assert :ok = Workspace.remove_issue_workspaces(nil)
   end
